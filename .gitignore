@@ -1,0 +1,10 @@
+# Local OpenTofu working files and state
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+tfplan
+# The create's generated variables and outputs
+build/
+__pycache__/
+*.pyc

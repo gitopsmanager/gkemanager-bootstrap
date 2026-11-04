@@ -1,0 +1,21 @@
+{
+  "name": "example-gce-dev-gke1",
+  "project": "client-dev",
+  "location": "europe-west1",
+  "zone_prefix": "gce-dev",
+  "dns_zone": "gce-dev.client.example.com",
+  "kubernetes_version": "1.36",
+  "network": {
+    "network": "client-vpc",
+    "subnetwork": "gke-dev",
+    "pods_range": "gke-dev-pods",
+    "services_range": "gke-dev-services",
+    "master_cidr": "172.16.0.0/28"
+  },
+  "node_pools": {
+    "system": { "machine_type": "e2-standard-4", "count": 1, "disk_size": 100 },
+    "general": { "machine_type": "e2-standard-8", "count": 1, "disk_size": 150 },
+    "spot": { "machine_type": "e2-standard-8", "count": 0, "disk_size": 150, "spot": true }
+  },
+  "global_namespaces": ["argocd", "monitoring"]
+}
