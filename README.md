@@ -61,12 +61,12 @@ the repository variables, and the roles for core-stack's `tofu/runners-gcp`.
   - on a Shared VPC subnet, if the subnet is shared: Compute Network User.
 - **Repository variables:** listed at the top of
   [`.github/workflows/bootstrap-create-cluster.yml`](.github/workflows/bootstrap-create-cluster.yml).
-- **Workflows may open pull requests:** the create records
-  `clusters/<cluster>.outputs.json` through a pull request squash-merged at once
-  (gitopsmanager/Auto-Commit-Squash-Merge), with the run's own token. Turn on
-  Settings -> Actions -> General -> Workflow permissions -> **Allow GitHub
-  Actions to create and approve pull requests** (off by default); with a
-  required review on `main`, let GitHub Actions bypass it.
+- **A GitHub App:** the create records `clusters/<cluster>.outputs.json` through
+  a pull request squash-merged at once (gitopsmanager/Auto-Commit-Squash-Merge),
+  as the App. Install one on this repository with **Contents** and **Pull
+  requests** read and write, then set the repository variable
+  `GOM_APP_CLIENT_ID` and the secret `GOM_APP_PRIVATE_KEY`. With a required review
+  on `main`, let the App bypass it.
 
 ## The cluster file
 
