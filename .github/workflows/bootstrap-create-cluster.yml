@@ -44,7 +44,7 @@
 #                                   gitopsmanager/core-stack, public); a private one is read
 #                                   as the GitHub App (GOM_APP_CLIENT_ID, secret
 #                                   GOM_APP_PRIVATE_KEY)
-#   TERRAFORM_VERSION                    optional: Terraform, when the runner has none (default 1.11.0)
+#   TERRAFORM_VERSION                    optional: not used; the workflow installs Terraform 1.17.1
 #   COST_LABEL_NAME, COST_LABEL_VALUE  optional: a cost label on everything
 name: bootstrap-create-cluster
 
@@ -142,7 +142,7 @@ jobs:
       - name: Install Terraform
         # Pinned: must match the other Terraform runs.
         shell: bash
-        run: bash scripts/install_terraform.sh 1.11.0
+        run: bash scripts/install_terraform.sh 1.17.1
 
       - name: Tools
         run: |

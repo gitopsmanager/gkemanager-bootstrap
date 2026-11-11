@@ -1,7 +1,7 @@
 <!-- Copyright (c) 2026 GitOps Manager, S.L. SPDX-License-Identifier: Apache-2.0 -->
 # Terraform
 
-Everything here is Terraform 1.11.0, which each workflow installs on its runner
+Everything here is Terraform 1.17.1, which each workflow installs on its runner
 (`scripts/install_terraform.sh`). `create-cluster/` holds the three stages
 (`1-cluster`, `2-nodepools`, `3-platform`), each with its own state in GCS and
 the same two variables (`cluster`, `runtime`), written by

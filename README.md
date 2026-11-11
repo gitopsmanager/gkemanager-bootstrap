@@ -11,7 +11,7 @@ Open source under the [Apache License 2.0](LICENSE). Copyright GitOps Manager, S
 
 > **Beta: not tested.** Written 1 Nov 2026 and never run. The stages were
 > validated and the create script tested locally, before the move to Terraform
-> 1.11.0; nothing has run with Terraform, in GitHub Actions or against Google
+> 1.17.1; nothing has run with Terraform, in GitHub Actions or against Google
 > Cloud. Expect changes, and don't use
 > it for clusters you depend on yet.
 

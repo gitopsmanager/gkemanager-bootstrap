@@ -108,7 +108,7 @@ jobs:
       - name: Install Terraform
         # Pinned: must match the other Terraform runs.
         shell: bash
-        run: bash scripts/install_terraform.sh 1.11.0
+        run: bash scripts/install_terraform.sh 1.17.1
 
       - name: The cluster file
         id: prepare
