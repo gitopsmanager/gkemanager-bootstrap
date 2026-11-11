@@ -1,6 +1,6 @@
 # Copyright (c) 2026 GitOps Manager, S.L.
 # SPDX-License-Identifier: Apache-2.0
-# OpenTofu only (see tofu/README.md). State:
+# Terraform (see terraform/README.md). State:
 #   gs://<CREATE_CLUSTER_STATE_BUCKET>/projects/<project>/clusters/<cluster>/3-platform/
 terraform {
   required_version = ">= 1.11.0"

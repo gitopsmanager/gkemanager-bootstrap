@@ -1,0 +1,176 @@
+# Copyright (c) 2026 GitOps Manager, S.L.
+# SPDX-License-Identifier: Apache-2.0
+# Config Connector's own identity on a GKE cluster -- the Google service
+# account cnrm-<cluster>, its Workload Identity binding and its roles
+# (terraform/cluster-identities/cnrm) -- with Terraform, on GitOps Manager's long-job
+# runner. The GKE counterpart of eksmanager-bootstrap's workflow of the same
+# name. Config Connector can never change its own identity (it may touch only
+# gom-* service accounts), so this is the only way it is made or changed: by
+# the create (bootstrap-create-cluster.yml's identity-cnrm stage, the same
+# module and state) and here.
+#
+# mode create (create-if-missing):
+#   - a state already (gs://<bucket>/projects/<project>/clusters/<cluster>/identity-cnrm/):
+#     continued, so a run that failed half way can be re-run
+#   - no state, and the service account is there: refused. It was not made
+#     here, and is never imported, changed or replaced
+# mode update: the identity as the code has it now (new grants, a changed
+# role), for a cluster whose identity has a state here. Refused without one.
+#
+# Both modes refuse a plan that deletes or replaces anything (NO_DESTROY,
+# scripts/plan_guard.py): grants are added and changed here, never removed by
+# a replacement.
+#
+# The cluster is read from clusters/<cluster>.json, as the create reads it.
+# Repository variables: bootstrap-create-cluster.yml's.
+name: bootstrap-cluster-identities
+
+run-name: "Cluster identity ${{ inputs.identity }} (${{ inputs.mode }}) for ${{ inputs.cluster }}${{ inputs.dry_run && ' (plan only)' || '' }} -- ${{ inputs.requested_by || github.actor }} [${{ inputs.plan_step }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: "Cluster name: clusters/<cluster>.json"
+        required: true
+        type: string
+      identity:
+        description: "Which identity"
+        required: true
+        type: choice
+        options:
+          - cnrm
+      mode:
+        description: "create: only when missing. update: bring an existing one up to the code (new grants)."
+        type: choice
+        default: create
+        options:
+          - create
+          - update
+      dry_run:
+        description: "Plan only; change nothing"
+        type: boolean
+        default: false
+      requested_by:
+        description: "The GUI user, when the GUI starts it"
+        type: string
+        default: ""
+      plan_step:
+        description: "The GUI's plan step id, for matching this run (in the run name)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write    # Workload Identity Federation
+
+concurrency:
+  group: create-cluster-${{ inputs.cluster }}
+  cancel-in-progress: false
+
+env:
+  STATE_BUCKET: ${{ vars.CREATE_CLUSTER_STATE_BUCKET }}
+  TFVARS: build/create-cluster/create.auto.tfvars.json
+
+jobs:
+  identity:
+    runs-on: ${{ vars.CREATE_CLUSTER_RUNNER || 'gom-gcp-long' }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v7
+
+      - name: Check the settings
+        id: settings
+        env:
+          WIP: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SA: ${{ vars.GCP_SERVICE_ACCOUNT }}
+          BUCKET: ${{ vars.CREATE_CLUSTER_STATE_BUCKET }}
+          SECRETS_PROJECT: ${{ vars.SECRETS_PROJECT }}
+          CD_REPO: ${{ vars.CD_REPO }}
+          CLUSTER: ${{ inputs.cluster }}
+        run: |
+          set -euo pipefail
+          for v in BUCKET SECRETS_PROJECT CD_REPO; do
+            [ -n "${!v:-}" ] || { echo "::error::Repository variable for $v is not set (see the top of bootstrap-create-cluster.yml)"; exit 1; }
+          done
+          if [ -n "$WIP" ] && [ -z "$SA" ]; then echo "::error::GCP_WORKLOAD_IDENTITY_PROVIDER needs GCP_SERVICE_ACCOUNT"; exit 1; fi
+          [[ "$CLUSTER" =~ ^[a-z][a-z0-9-]{0,38}[a-z0-9]$ ]] || { echo "::error::Not a GKE cluster name: $CLUSTER"; exit 1; }
+          [ -f "clusters/$CLUSTER.json" ] || { echo "::error::No clusters/$CLUSTER.json: GKE clusters are made by bootstrap-create-cluster.yml"; exit 1; }
+          command -v terraform >/dev/null && echo "terraform=true" >> "$GITHUB_OUTPUT" || echo "terraform=false" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@v3
+        if: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER != '' }}
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
+
+      - name: Install Terraform
+        # Pinned: must match the other Terraform runs.
+        shell: bash
+        run: bash scripts/install_terraform.sh 1.11.0
+
+      - name: The cluster file
+        id: prepare
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          SECRETS_PROJECT: ${{ vars.SECRETS_PROJECT }}
+          DNS_PROJECT: ${{ vars.DNS_PROJECT || vars.SECRETS_PROJECT }}
+          CD_REPO: ${{ vars.CD_REPO }}
+          COST_LABEL_NAME: ${{ vars.COST_LABEL_NAME }}
+          COST_LABEL_VALUE: ${{ vars.COST_LABEL_VALUE }}
+        run: |
+          set -euo pipefail
+          runtime=$(python3 -c 'import json, os; print(json.dumps({
+            "secrets_project": os.environ["SECRETS_PROJECT"],
+            "dns_project": os.environ["DNS_PROJECT"],
+            "cd_repo_url": "https://github.com/" + os.environ["CD_REPO"] + ".git",
+            "core_stack_dir": "",
+            "cost_label_name": os.environ.get("COST_LABEL_NAME", ""),
+            "cost_label_value": os.environ.get("COST_LABEL_VALUE", ""),
+          }))')
+          python3 scripts/create_cluster.py prepare --cluster "$CLUSTER" --runtime "$runtime"
+
+      - name: Already there?
+        id: check
+        env:
+          CLUSTER: ${{ inputs.cluster }}
+          PROJECT: ${{ steps.prepare.outputs.project }}
+          IDENTITY: ${{ inputs.identity }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          set -euo pipefail
+          key="projects/$PROJECT/clusters/$CLUSTER/identity-$IDENTITY"
+          if gcloud storage ls "gs://$STATE_BUCKET/$key/default.tfstate" >/dev/null 2>&1; then
+            echo "State $key exists: continuing it."
+            exit 0
+          fi
+          if [ "$MODE" = update ]; then
+            echo "::error::$IDENTITY on $CLUSTER has no state here ($key): it was not made by this workflow or the create, so it is never changed here. Run mode create first."
+            exit 1
+          fi
+          account=$(python3 -c 'import re, sys; print(re.sub(r"-+$", "", ("cnrm-" + sys.argv[1])[:30]))' "$CLUSTER")
+          if gcloud iam service-accounts describe "$account@$PROJECT.iam.gserviceaccount.com" --project "$PROJECT" >/dev/null 2>&1; then
+            echo "::error::$account exists in $PROJECT but has no state here ($key). It is never imported or changed here: delete it if it is unused, and run again."
+            exit 1
+          fi
+          echo "$account does not exist: creating it."
+
+      - name: Terraform
+        env:
+          STAGE_DIR: terraform/cluster-identities/${{ inputs.identity }}
+          NO_DESTROY: "1"
+        run: bash scripts/run_terraform_stage.sh "identity-${{ inputs.identity }}" "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "${{ inputs.dry_run && 'plan' || 'apply' }}" "$TFVARS"
+
+      - name: Result
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          sa=$(python3 -c "import json;print(json.load(open('build/create-cluster/identity-${{ inputs.identity }}.outputs.json'))['service_account']['value'])")
+          echo "${{ inputs.identity }} identity for ${{ inputs.cluster }}: $sa" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # After a cancel, as in bootstrap-create-cluster.yml.
+      - name: Stop Terraform gracefully
+        if: cancelled()
+        timeout-minutes: 15
+        run: bash scripts/run_terraform_stage.sh --stop

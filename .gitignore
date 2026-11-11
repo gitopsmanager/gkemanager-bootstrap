@@ -1,4 +1,4 @@
-# Local OpenTofu working files and state
+# Local Terraform working files and state
 .terraform/
 .terraform.lock.hcl
 *.tfstate

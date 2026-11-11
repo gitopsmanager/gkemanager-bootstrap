@@ -14,7 +14,7 @@
 #      (crane; the image Cloud Run runs, from your registry, not GHCR)
 #   4. prints the repository variables to set in this repo
 #
-# Then: core-stack's tofu/runners-gcp (the runners, as the module's README
+# Then: core-stack's terraform/runners-gcp (the runners, as the module's README
 # says), with role_bindings for the create (below), and the bootstrap GitHub
 # App's webhook pointed at its scaler.
 #
@@ -24,6 +24,11 @@
 #   CLUSTER_PROJECTS  space-separated projects GKE clusters go in
 #   RUNNER_IMAGE      optional: ghcr.io/gitopsmanager/runner@sha256:... (from
 #                     runner-images' newest images.json); skipped when empty
+#   RUNNER_CAPTURE_IMAGE optional: ghcr.io/gitopsmanager/runner-capture@sha256:...
+#                     (runner-images images/runner-capture, the same images.json):
+#                     the images runners' image (State of World captures, with
+#                     Playwright and Chromium); skipped when empty, and those
+#                     runners then use RUNNER_IMAGE, which has no browser
 #   STATE_BUCKET      optional: default <SHARED_PROJECT>-gke-clusters
 #   REPOSITORY        optional: the Artifact Registry repository, default gitopsmanager
 set -euo pipefail
@@ -75,6 +80,17 @@ if [ -n "${RUNNER_IMAGE:-}" ]; then
   echo "runner_image = \"$target@$digest\""
 fi
 
+if [ -n "${RUNNER_CAPTURE_IMAGE:-}" ]; then
+  say "Images runners' image (runner-capture)"
+  command -v crane >/dev/null || { echo "crane is needed to copy the image (go-containerregistry)"; exit 1; }
+  digest="${RUNNER_CAPTURE_IMAGE##*@}"
+  [[ "$digest" == sha256:* ]] || { echo "RUNNER_CAPTURE_IMAGE must be pinned by digest (...@sha256:...)"; exit 1; }
+  target="$REGION-docker.pkg.dev/$SHARED_PROJECT/$REPOSITORY/runner-capture"
+  gcloud auth print-access-token | crane auth login "$REGION-docker.pkg.dev" -u oauth2accesstoken --password-stdin
+  crane copy "$RUNNER_CAPTURE_IMAGE" "$target:${digest#sha256:}"
+  echo "images_image = \"$target@$digest\""
+fi
+
 say "Next"
 cat <<EOF
 Repository variables for this repo (Settings > Secrets and variables > Actions):
@@ -85,7 +101,7 @@ Repository variables for this repo (Settings > Secrets and variables > Actions):
 And: Settings > Actions > General > Workflow permissions > Allow GitHub Actions
 to create and approve pull requests (the create commits its record through one).
 
-core-stack tofu/runners-gcp, role_bindings for the create (each cluster project,
+core-stack terraform/runners-gcp, role_bindings for the create (each cluster project,
 and the shared services project):
 EOF
 for p in $CLUSTER_PROJECTS; do

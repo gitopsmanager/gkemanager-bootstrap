@@ -1,10 +1,20 @@
 # Copyright (c) 2026 GitOps Manager, S.L.
 # SPDX-License-Identifier: Apache-2.0
 # -----------------------------------------------------------------------------
-# Stage 2 of 3: the node pools, one per entry in the cluster file.
+# Stage 2: the bootstrap pool, the cluster's only pool until the handover.
 #
-#   labelled sku=<pool>      where the core stack places things (Traefik on
-#                            sku=general), as on EKS and AKS
+# The cluster file's pools are NOT made here. Config Connector makes them from
+# the CD repo (core-stack components/nodepools, ContainerNodePool), once the
+# core stack has installed it; then the handover (4-handover/README.md) runs
+# this stage again with runtime.bootstrap_pool false, which deletes the
+# bootstrap pool and leaves this state honest. Until then:
+#
+#   one pool, "bootstrap"    one node per zone, the size of the file's general
+#                            pool, so the platform (Argo CD, the core stack,
+#                            Config Connector) has somewhere to run
+#   labelled sku=general     where the core stack places things (Traefik on
+#                            sku=general), as the general pool will be; and
+#                            gitopsmanager.io/bootstrap=true
 #   GKE_METADATA             Workload Identity on the nodes: pods get their
 #                            Kubernetes service account's Google identity,
 #                            never the node's
@@ -27,8 +37,20 @@ data "google_service_account" "nodes" {
   account_id = substr("gke-${var.cluster.name}-nodes", 0, 30)
 }
 
+locals {
+  general = var.cluster.node_pools["general"]
+  pools = var.runtime.bootstrap_pool ? {
+    bootstrap = {
+      machine_type = local.general.machine_type
+      count        = 1
+      disk_size    = local.general.disk_size
+      spot         = false
+    }
+  } : {}
+}
+
 resource "google_container_node_pool" "this" {
-  for_each = var.cluster.node_pools
+  for_each = local.pools
 
   name     = each.key
   cluster  = data.google_container_cluster.this.name
@@ -51,7 +73,8 @@ resource "google_container_node_pool" "this" {
     service_account = data.google_service_account.nodes.email
     oauth_scopes    = ["https://www.googleapis.com/auth/cloud-platform"]
     labels = {
-      sku = each.key
+      sku                          = "general"
+      "gitopsmanager.io/bootstrap" = "true"
     }
     workload_metadata_config {
       mode = "GKE_METADATA"

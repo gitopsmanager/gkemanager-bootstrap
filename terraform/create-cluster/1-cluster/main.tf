@@ -26,7 +26,7 @@ locals {
     {
       "gkemanager"  = "managed"
       "deployed-by" = "gitopsmanager"
-      "managed-by"  = "opentofu"
+      "managed-by"  = "terraform"
       "environment" = var.cluster.zone_prefix
     },
     var.runtime.cost_label_name == "" ? {} : { (lower(var.runtime.cost_label_name)) = lower(var.runtime.cost_label_value) },

@@ -2,7 +2,7 @@
 # Copyright (c) 2026 GitOps Manager, S.L.
 # SPDX-License-Identifier: Apache-2.0
 """
-Steps of bootstrap-create-cluster.yml (GKE) that are not OpenTofu.
+Steps of bootstrap-create-cluster.yml (GKE) that are not Terraform.
 
     prepare    validate clusters/<name>.json, write the variables every stage
                reads (build/create-cluster/create.auto.tfvars.json)
@@ -26,6 +26,9 @@ VERSION_RE = re.compile(r"^1\.[0-9]{2}$")
 MACHINE_RE = re.compile(r"^[a-z][a-z0-9]*-[a-z0-9-]+$")
 NS_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
 RESOURCE_RE = re.compile(r"^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$")
+# A zone prefix names its certificate secret as it is, on every cloud: letters,
+# digits and dashes; an underscore is refused, never rewritten.
+PREFIX_RE = re.compile(r"^[A-Za-z0-9-]+$")
 
 SPEC_KEYS = {"name", "project", "location", "zone_prefix", "dns_zone", "kubernetes_version",
              "network", "node_pools", "global_namespaces"}
@@ -73,6 +76,8 @@ def validate(spec):
         errors.append(f"location: a region (europe-west1) or a zone (europe-west1-b), got {spec['location']!r}")
     if not VERSION_RE.match(str(spec["kubernetes_version"])):
         errors.append("kubernetes_version: major.minor, e.g. 1.36")
+    if not PREFIX_RE.match(str(spec["zone_prefix"])):
+        errors.append(f"zone_prefix: letters, digits and '-' only ('_' is not allowed), got {spec['zone_prefix']!r}")
     if not str(spec["dns_zone"]).endswith(".") and "." not in str(spec["dns_zone"]):
         errors.append("dns_zone: a DNS name, e.g. gce-dev.client.example.com")
     net = spec["network"]
@@ -143,7 +148,7 @@ def cmd_prepare(a):
 
 def cmd_register(a):
     spec = load_json(os.path.join(a.clusters_dir, f"{a.cluster}.json"), "Cluster file")
-    outputs = load_json(a.tofu_outputs, "OpenTofu outputs")
+    outputs = load_json(a.terraform_outputs, "Terraform outputs")
 
     def out(k):
         v = outputs.get(k, {})
@@ -178,7 +183,7 @@ def main():
     s = sub.add_parser("register")
     s.add_argument("--cluster", required=True)
     s.add_argument("--clusters-dir", default="clusters")
-    s.add_argument("--tofu-outputs", required=True)
+    s.add_argument("--terraform-outputs", required=True)
     s.set_defaults(fn=cmd_register)
     a = p.parse_args()
     a.fn(a)

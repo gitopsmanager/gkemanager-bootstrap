@@ -1,22 +1,27 @@
 # Copyright (c) 2026 GitOps Manager, S.L.
 # SPDX-License-Identifier: Apache-2.0
-# Create one GKE cluster from clusters/<cluster>.json, with OpenTofu. The GKE
+# Create one GKE cluster from clusters/<cluster>.json, with Terraform. The GKE
 # counterpart of eksmanager-bootstrap's bootstrap-create-cluster.yml.
 #
 #   validate the cluster file
 #   -> 1-cluster (the cluster, its node service account)
-#   -> 2-nodepools
+#   -> identity-cnrm (Config Connector's own identity, terraform/cluster-identities/cnrm;
+#      also run on its own by bootstrap-cluster-identities.yml)
+#   -> 2-nodepools (the bootstrap pool only)
 #   -> 3-platform (namespaces, the Argo CD admin password, Workload Identity
 #      grants, Argo CD)
 #   -> record it (clusters/<cluster>.outputs.json)
 #
-# Then install the core stack on it with core-stack's install-core-stack.yml.
+# Then install the core stack on it with core-stack's install-core-stack.yml,
+# with install_node_pool_operator on. The cluster file's pools come after
+# that, from the CD repo through Config Connector; the bootstrap pool then
+# goes (terraform/create-cluster/4-handover/README.md, not built yet).
 #
 # Safe to re-run: each stage is its own state, and a stage that is up to date
 # plans no changes. Two runs for the same cluster queue rather than race.
 #
 # Runs on GitOps Manager's long-job runner on Google Cloud (label gom-gcp-long:
-# a Cloud Run job execution, core-stack's tofu/runners-gcp) as that runner's
+# a Cloud Run job execution, core-stack's terraform/runners-gcp) as that runner's
 # service account, which may create clusters in the cluster's project and
 # write secrets and IAM in the shared services project (the module's
 # role_bindings). The control plane is reached through its DNS-based endpoint,
@@ -39,7 +44,7 @@
 #                                   gitopsmanager/core-stack, public); a private one is read
 #                                   as the GitHub App (GOM_APP_CLIENT_ID, secret
 #                                   GOM_APP_PRIVATE_KEY)
-#   TOFU_VERSION                    optional: OpenTofu, when the runner has none (default 1.11.0)
+#   TERRAFORM_VERSION                    optional: Terraform, when the runner has none (default 1.11.0)
 #   COST_LABEL_NAME, COST_LABEL_VALUE  optional: a cost label on everything
 name: bootstrap-create-cluster
 
@@ -123,8 +128,8 @@ jobs:
             [ -n "${!v:-}" ] || { echo "::error::Repository variable for $v is not set (see the top of this workflow)"; exit 1; }
           done
           if [ -n "$WIP" ] && [ -z "$SA" ]; then echo "::error::GCP_WORKLOAD_IDENTITY_PROVIDER needs GCP_SERVICE_ACCOUNT"; exit 1; fi
-          # The runner image has OpenTofu; GitHub's runners don't.
-          command -v tofu >/dev/null && echo "tofu=true" >> "$GITHUB_OUTPUT" || echo "tofu=false" >> "$GITHUB_OUTPUT"
+          # The runner image has Terraform; GitHub's runners don't.
+          command -v terraform >/dev/null && echo "terraform=true" >> "$GITHUB_OUTPUT" || echo "terraform=false" >> "$GITHUB_OUTPUT"
 
       # Elsewhere than our runner: Workload Identity Federation. On it, the
       # runner's service account (gcloud reads it from the metadata server).
@@ -134,12 +139,10 @@ jobs:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.GCP_SERVICE_ACCOUNT }}
 
-      # The wrapper off: run_tofu_stage.sh reads OpenTofu's exit codes.
-      - uses: opentofu/setup-opentofu@v1
-        if: ${{ steps.settings.outputs.tofu == 'false' }}
-        with:
-          tofu_version: ${{ vars.TOFU_VERSION || '1.11.0' }}
-          tofu_wrapper: false
+      - name: Install Terraform
+        # Pinned: must match the other Terraform runs.
+        shell: bash
+        run: bash scripts/install_terraform.sh 1.11.0
 
       - name: Tools
         run: |
@@ -148,7 +151,7 @@ jobs:
           # image; on GitHub's runners the plugin comes from Google's apt
           # repository.
           command -v gke-gcloud-auth-plugin >/dev/null || sudo apt-get install -y -qq google-cloud-cli-gke-gcloud-auth-plugin >/dev/null
-          tofu version
+          terraform version
           gcloud --version | head -1
           helm version --short
           python3 --version
@@ -178,22 +181,31 @@ jobs:
         run: helm dependency build core-stack/components/argo-cd
 
       - name: 1-cluster
-        run: bash scripts/run_tofu_stage.sh 1-cluster "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "${{ inputs.dry_run && 'plan' || 'apply' }}" "$TFVARS"
+        run: bash scripts/run_terraform_stage.sh 1-cluster "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" "${{ inputs.dry_run && 'plan' || 'apply' }}" "$TFVARS"
+
+      # Config Connector's identity: its own state, and never deleted or
+      # replaced by a run (NO_DESTROY).
+      - name: identity-cnrm
+        if: ${{ !inputs.dry_run }}
+        env:
+          STAGE_DIR: terraform/cluster-identities/cnrm
+          NO_DESTROY: "1"
+        run: bash scripts/run_terraform_stage.sh identity-cnrm "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" apply "$TFVARS"
 
       - name: 2-nodepools
         if: ${{ !inputs.dry_run }}
-        run: bash scripts/run_tofu_stage.sh 2-nodepools "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" apply "$TFVARS"
+        run: bash scripts/run_terraform_stage.sh 2-nodepools "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" apply "$TFVARS"
 
       - name: 3-platform
         if: ${{ !inputs.dry_run }}
-        run: bash scripts/run_tofu_stage.sh 3-platform "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" apply "$TFVARS"
+        run: bash scripts/run_terraform_stage.sh 3-platform "${{ steps.prepare.outputs.project }}" "${{ inputs.cluster }}" "$STATE_BUCKET" apply "$TFVARS"
 
       - name: Record the cluster
         if: ${{ !inputs.dry_run }}
         run: |
           set -euo pipefail
           python3 scripts/create_cluster.py register --cluster "${{ inputs.cluster }}" \
-            --tofu-outputs build/create-cluster/1-cluster.outputs.json
+            --terraform-outputs build/create-cluster/1-cluster.outputs.json
           echo "Created ${{ inputs.cluster }}. Next: core-stack's install-core-stack.yml with stacks/${{ inputs.cluster }}.json." >> "$GITHUB_STEP_SUMMARY"
 
       # Made here, not earlier: an App token lasts an hour.
@@ -225,10 +237,10 @@ jobs:
           commit_message: "Created GKE cluster ${{ inputs.cluster }} (run ${{ github.run_id }})"
 
       # After a cancel (GitHub's Cancel button; the GUI offers none for a
-      # create): OpenTofu runs apart from the stage steps and has been asked to
+      # create): Terraform runs apart from the stage steps and has been asked to
       # stop gracefully; this waits for it, and removes a lock this runner left
-      # only if OpenTofu died holding it (scripts/run_tofu_stage.sh).
-      - name: Stop OpenTofu gracefully
+      # only if Terraform died holding it (scripts/run_terraform_stage.sh).
+      - name: Stop Terraform gracefully
         if: cancelled()
         timeout-minutes: 45
-        run: bash scripts/run_tofu_stage.sh --stop
+        run: bash scripts/run_terraform_stage.sh --stop
